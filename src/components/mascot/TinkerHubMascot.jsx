@@ -58,10 +58,13 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
   const wordmarkTimer = useRef(null);
   const awakeningTimer = useRef(null);
   const watchdogTimer = useRef(null);
+  const failSafeActiveRef = useRef(false);
   const hasAwakenedRef = useRef(false);
   const advanceRef = useRef(null);
 
   const activateFailSafe = useCallback((reason) => {
+    if (failSafeActiveRef.current) return;
+    failSafeActiveRef.current = true;
     window.clearTimeout(schedulerTimer.current);
     window.clearTimeout(fadeTimer.current);
     window.clearTimeout(wordmarkTimer.current);
@@ -73,6 +76,7 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
   }, []);
 
   const scheduleNext = useCallback((delay, trackPoseDeadline = true) => {
+    if (failSafeActiveRef.current) return;
     window.clearTimeout(schedulerTimer.current);
     if (trackPoseDeadline) poseEndsAt.current = Date.now() + delay;
     schedulerTimer.current = window.setTimeout(() => advanceRef.current?.(), delay);
@@ -161,6 +165,7 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
   }, [selectNextPose, transitionTo]);
 
   const queueEventAtLoopBoundary = useCallback((event) => {
+    if (failSafeActiveRef.current) return;
     pendingPoses.current = enqueueEvent(
       pendingPoses.current,
       event,
