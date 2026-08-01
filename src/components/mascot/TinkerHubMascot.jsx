@@ -13,9 +13,18 @@ import {
   POSES,
 } from './manifest';
 import { decideNextPose, getWeatherPose } from './policy';
+import {
+  getMascotAssetUrl,
+  getMascotWatchdogFailure,
+} from './watchdog';
 
 const FADE_MS = 380;
+const WATCHDOG_INTERVAL_MS = 5000;
+const WATCHDOG_SCHEDULER_GRACE_MS = 12000;
+const WATCHDOG_ANIMATION_GRACE_MS = 15000;
+const MASCOT_ASSET_VERSION = process.env.REACT_APP_MASCOT_ASSET_VERSION || 'mascot-watchdog-v1';
 const PUBLIC_ASSET_BASE = process.env.PUBLIC_URL === '.' ? '' : process.env.PUBLIC_URL;
+const FALLBACK_STICKER_IMAGE = '/images/dont-look.png';
 
 function randomDuration(min, max) {
   return min + Math.round(Math.random() * (max - min));
@@ -26,9 +35,11 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
   const [activePose, setActivePose] = useState('awakening');
   const [previousPose, setPreviousPose] = useState(null);
   const [wordmarkVisible, setWordmarkVisible] = useState(false);
+  const [failSafeReason, setFailSafeReason] = useState(null);
   const activePoseRef = useRef('awakening');
   const poseStartedAt = useRef(Date.now());
   const poseEndsAt = useRef(0);
+  const lastAnimationHeartbeatAt = useRef(Date.now());
   const previousMakerCount = useRef(null);
   const weatherPoseRef = useRef(null);
   const pendingPoses = useRef([]);
@@ -46,10 +57,26 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
   const fadeTimer = useRef(null);
   const wordmarkTimer = useRef(null);
   const awakeningTimer = useRef(null);
+  const watchdogTimer = useRef(null);
+  const failSafeActiveRef = useRef(false);
   const hasAwakenedRef = useRef(false);
   const advanceRef = useRef(null);
 
+  const activateFailSafe = useCallback((reason) => {
+    if (failSafeActiveRef.current) return;
+    failSafeActiveRef.current = true;
+    window.clearTimeout(schedulerTimer.current);
+    window.clearTimeout(fadeTimer.current);
+    window.clearTimeout(wordmarkTimer.current);
+    window.clearTimeout(awakeningTimer.current);
+    window.clearInterval(watchdogTimer.current);
+    setPreviousPose(null);
+    setWordmarkVisible(false);
+    setFailSafeReason(reason);
+  }, []);
+
   const scheduleNext = useCallback((delay, trackPoseDeadline = true) => {
+    if (failSafeActiveRef.current) return;
     window.clearTimeout(schedulerTimer.current);
     if (trackPoseDeadline) poseEndsAt.current = Date.now() + delay;
     schedulerTimer.current = window.setTimeout(() => { if (advanceRef.current) advanceRef.current(); }, delay);
@@ -106,6 +133,7 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
       setActivePose(nextPose);
       activePoseRef.current = nextPose;
       poseStartedAt.current = Date.now();
+      lastAnimationHeartbeatAt.current = Date.now();
       fadeTimer.current = window.setTimeout(() => setPreviousPose(null), FADE_MS);
 
       if (currentPose === 'awakening' || currentPose === 'returning') {
@@ -137,6 +165,7 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
   }, [selectNextPose, transitionTo]);
 
   const queueEventAtLoopBoundary = useCallback((event) => {
+    if (failSafeActiveRef.current) return;
     pendingPoses.current = enqueueEvent(
       pendingPoses.current,
       event,
@@ -247,14 +276,80 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
       window.clearTimeout(schedulerTimer.current);
       window.clearTimeout(fadeTimer.current);
       window.clearTimeout(wordmarkTimer.current);
+      window.clearInterval(watchdogTimer.current);
       setPreviousPose(null);
     };
   }, [isVisible, scheduleNext, selectNextPose, transitionTo]);
 
+  useEffect(() => {
+    if (!isVisible || failSafeReason) return undefined;
+
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      cancelled = true;
+    };
+    image.onerror = () => {
+      if (!cancelled) activateFailSafe('asset-error');
+    };
+    image.src = getMascotAssetUrl(PUBLIC_ASSET_BASE, POSES[activePose].image, MASCOT_ASSET_VERSION);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePose, activateFailSafe, failSafeReason, isVisible]);
+
+  useEffect(() => {
+    if (!isVisible || failSafeReason) return undefined;
+
+    watchdogTimer.current = window.setInterval(() => {
+      if (document.hidden) {
+        lastAnimationHeartbeatAt.current = Date.now();
+        return;
+      }
+
+      const reason = getMascotWatchdogFailure({
+        now: Date.now(),
+        pose: POSES[activePoseRef.current],
+        poseEndsAt: poseEndsAt.current,
+        lastAnimationHeartbeatAt: lastAnimationHeartbeatAt.current,
+        hasAwakened: hasAwakenedRef.current,
+        schedulerGraceMs: WATCHDOG_SCHEDULER_GRACE_MS,
+        animationGraceMs: WATCHDOG_ANIMATION_GRACE_MS,
+      });
+
+      if (reason) activateFailSafe(reason);
+    }, WATCHDOG_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(watchdogTimer.current);
+    };
+  }, [activateFailSafe, failSafeReason, isVisible]);
+
   if (!isVisible) return null;
+
+  if (failSafeReason) {
+    return (
+      <div
+        className="tinkerhub-mascot tinkerhub-mascot--fallback"
+        data-failsafe-reason={failSafeReason}
+      >
+        <img
+          className="tinkerhub-mascot__fallback-sticker"
+          src={getMascotAssetUrl(PUBLIC_ASSET_BASE, FALLBACK_STICKER_IMAGE, MASCOT_ASSET_VERSION)}
+          alt="TinkerHub mascot sticker"
+        />
+      </div>
+    );
+  }
 
   const renderSprite = (pose, className) => {
     const playback = getPlayback(POSES[pose]);
+    const markAnimationHeartbeat = (event) => {
+      if (event.animationName === 'mascot-sprite') {
+        lastAnimationHeartbeatAt.current = Date.now();
+      }
+    };
 
     return (
       <div
@@ -262,8 +357,10 @@ export default function TinkerHubMascot({ makerCount, currentView, isVisible }) 
         className={`tinkerhub-mascot__sprite ${className}`}
         role={className === 'tinkerhub-mascot__sprite--active' ? 'img' : undefined}
         aria-label={className === 'tinkerhub-mascot__sprite--active' ? POSES[pose].label : undefined}
+        onAnimationStart={markAnimationHeartbeat}
+        onAnimationIteration={markAnimationHeartbeat}
         style={{
-          '--mascot-sprite': `url(${PUBLIC_ASSET_BASE}${POSES[pose].image})`,
+          '--mascot-sprite': `url(${getMascotAssetUrl(PUBLIC_ASSET_BASE, POSES[pose].image, MASCOT_ASSET_VERSION)})`,
           '--mascot-cycle': `${POSES[pose].cycle}ms`,
           '--mascot-sprite-iterations': Number.isFinite(playback.cycles) ? playback.cycles : 'infinite',
         }}
