@@ -37,6 +37,19 @@
   transform-origin: bottom right;
 }
 
+.tinkerhub-mascot--fallback {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.tinkerhub-mascot__fallback-sticker {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
 .tinkerhub-mascot__sprite {
   position: absolute;
   inset: 0;
