@@ -80,7 +80,10 @@ const CalendarDashboard = () => {
 
   const calendarEvents = useMemo(() => data?.calendar ?? [], [data?.calendar]);
   const liveEvent = useMemo(() => data?.live_event ?? null, [data?.live_event]);
-  const upcomingEvents = useMemo(() => data?.upcoming_events ?? [], [data?.upcoming_events]);
+  const upcomingEvents = useMemo(
+    () => (data?.upcoming_events ?? []).filter(event => new Date(event.starts_at) > currentDate),
+    [data?.upcoming_events, currentDate]
+  );
 
   // ── Render: initial loading state ──────────────────────────────
   if (isInitialLoad) {
